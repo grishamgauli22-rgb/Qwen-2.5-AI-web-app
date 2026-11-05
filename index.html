@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qwen Local AI</title>
+    <!-- Marked.js for Markdown support -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { display: flex; height: 100vh; background-color: #1e1e2e; color: #cdd6f4; }
+        
+        /* Sidebar */
+        #sidebar { width: 260px; background-color: #181825; display: flex; flex-direction: column; padding: 15px; border-right: 1px solid #313244; }
+        #new-chat-btn { background: #89b4fa; color: #11111b; border: none; padding: 12px; font-weight: bold; border-radius: 8px; cursor: pointer; transition: 0.2s; }
+        #new-chat-btn:hover { background: #b4befe; }
+        #chat-list { margin-top: 20px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex: 1; }
+        .chat-item { padding: 10px; background: #313244; border-radius: 6px; cursor: pointer; color: #a6adc8; transition: 0.2s; display: flex; justify-content: space-between; align-items: center; }
+        .chat-item.active, .chat-item:hover { background: #45475a; color: #cdd6f4; }
+        .delete-btn { background: none; border: none; color: #f38ba8; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; }
+        .delete-btn:hover { opacity: 0.8; }
+
+        /* Main Chat Window */
+        #main { flex: 1; display: flex; flex-direction: column; height: 100vh; }
+        #chat-header { padding: 20px; border-bottom: 1px solid #313244; font-size: 1.2rem; font-weight: bold; }
+        #chat-history { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
+
+        /* Messages */
+        .msg { max-width: 80%; padding: 12px 16px; border-radius: 12px; line-height: 1.6; word-wrap: break-word; }
+        .msg.user { align-self: flex-end; background: #89b4fa; color: #11111b; border-bottom-right-radius: 2px; }
+        .msg.assistant { align-self: flex-start; background: #313244; color: #cdd6f4; border-bottom-left-radius: 2px; }
+
+        /* Markdown Styling inside Messages */
+        .msg p { margin-bottom: 8px; }
+        .msg p:last-child { margin-bottom: 0; }
+        .msg code { background: #11111b; padding: 2px 6px; border-radius: 4px; font-family: 'Consolas', monospace; font-size: 0.9em; }
+        .msg pre { background: #11111b; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; }
+        .msg pre code { background: none; padding: 0; }
+        .msg ul, .msg ol { margin-left: 20px; margin-bottom: 8px; }
+        .msg blockquote { border-left: 4px solid #89b4fa; padding-left: 10px; color: #a6adc8; margin: 8px 0; }
+
+        /* Input Bar */
+        #input-container { padding: 20px; border-top: 1px solid #313244; display: flex; gap: 10px; }
+        #user-input { flex: 1; padding: 14px; background: #313244; border: 1px solid #45475a; border-radius: 8px; color: #cdd6f4; font-size: 1rem; outline: none; }
+        #send-btn { background: #a6e3a1; color: #11111b; border: none; padding: 0 20px; font-weight: bold; border-radius: 8px; cursor: pointer; }
+        #send-btn:hover { background: #94e2d5; }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <button id="new-chat-btn" onclick="createNewChat()">+ New Chat</button>
+        <div id="chat-list"></div>
+    </div>
+
+    <div id="main">
+        <div id="chat-header" id="header-title">🤖 Qwen Local AI</div>
+        <div id="chat-history"></div>
+        <div id="input-container">
+            <input type="text" id="user-input" placeholder="Type a message..." onkeydown="if(event.key==='Enter') sendMessage()">
+            <button id="send-btn" onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        // Load saved chats from browser localStorage (or initialize default)
+        let chats = JSON.parse(localStorage.getItem("qwen_chats")) || { 
+            "Chat 1": [{ role: "system", content: "You are a helpful assistant." }] 
+        };
+        let activeChatId = localStorage.getItem("qwen_active_chat") || "Chat 1";
+
+        // Ensure activeChatId exists in chats
+        if (!chats[activeChatId]) {
+            activeChatId = Object.keys(chats)[0];
+        }
+
+        function saveToStorage() {
+            localStorage.setItem("qwen_chats", JSON.stringify(chats));
+            localStorage.setItem("qwen_active_chat", activeChatId);
+        }
+
+        function renderSidebar() {
+            const list = document.getElementById("chat-list");
+            list.innerHTML = "";
+            Object.keys(chats).forEach(id => {
+                const item = document.createElement("div");
+                item.className = `chat-item ${id === activeChatId ? 'active' : ''}`;
+                
+                const titleSpan = document.createElement("span");
+                titleSpan.innerText = id;
+                titleSpan.onclick = () => switchChat(id);
+                item.appendChild(titleSpan);
+
+                // Add delete button if there's more than one chat
+                if (Object.keys(chats).length > 1) {
+                    const delBtn = document.createElement("button");
+                    delBtn.className = "delete-btn";
+                    delBtn.innerText = "✕";
+                    delBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        deleteChat(id);
+                    };
+                    item.appendChild(delBtn);
+                }
+
+                list.appendChild(item);
+            });
+        }
+
+        function createNewChat() {
+            const chatKeys = Object.keys(chats);
+            let newIdNum = chatKeys.length + 1;
+            let newId = `Chat ${newIdNum}`;
+            while(chats[newId]) {
+                newIdNum++;
+                newId = `Chat ${newIdNum}`;
+            }
+
+            chats[newId] = [{ role: "system", content: "You are a helpful assistant." }];
+            activeChatId = newId;
+            saveToStorage();
+            renderSidebar();
+            renderMessages();
+        }
+
+        function deleteChat(id) {
+            delete chats[id];
+            const remainingKeys = Object.keys(chats);
+            activeChatId = remainingKeys[remainingKeys.length - 1];
+            saveToStorage();
+            renderSidebar();
+            renderMessages();
+        }
+
+        function switchChat(id) {
+            activeChatId = id;
+            saveToStorage();
+            renderSidebar();
+            renderMessages();
+        }
+
+        function renderMessages() {
+            const history = document.getElementById("chat-history");
+            history.innerHTML = "";
+            document.getElementById("chat-header").innerText = `🤖 ${activeChatId}`;
+
+            chats[activeChatId].forEach(msg => {
+                if (msg.role !== "system") {
+                    const div = document.createElement("div");
+                    div.className = `msg ${msg.role}`;
+                    div.innerHTML = marked.parse(msg.content);
+                    history.appendChild(div);
+                }
+            });
+            history.scrollTop = history.scrollHeight;
+        }
+
+        async function sendMessage() {
+    const input = document.getElementById("user-input");
+    const text = input.value.trim();
+    if (!text) return;
+
+    // Push user message to active chat's isolated history
+    chats[activeChatId].push({ role: "user", content: text });
+    input.value = "";
+
+    // ---------------------------------------------------------
+    // AUTO-RENAME FEATURE: If this is the first user message, 
+    // rename the chat title using the first few words of the prompt.
+    // ---------------------------------------------------------
+    const userMessages = chats[activeChatId].filter(m => m.role === "user");
+    if (userMessages.length === 1 && activeChatId.startsWith("Chat ")) {
+        // Truncate text to 25 characters max for a clean sidebar title
+        let newTitle = text.length > 25 ? text.substring(0, 25) + "..." : text;
+        
+        // Handle edge case if title already exists
+        let uniqueTitle = newTitle;
+        let counter = 1;
+        while (chats[uniqueTitle]) {
+            uniqueTitle = `${newTitle} (${counter})`;
+            counter++;
+        }
+
+        // Rename the key in the chats object
+        chats[uniqueTitle] = chats[activeChatId];
+        delete chats[activeChatId];
+        activeChatId = uniqueTitle;
+    }
+
+    saveToStorage();
+    renderSidebar();
+    renderMessages();
+
+    // Temporary thinking placeholder
+    chats[activeChatId].push({ role: "assistant", content: "Thinking..." });
+    renderMessages();
+
+    try {
+        const res = await refreshChatBackend(chats[activeChatId].slice(0, -1));
+        chats[activeChatId][chats[activeChatId].length - 1].content = res.response;
+    } catch (err) {
+        chats[activeChatId][chats[activeChatId].length - 1].content = "Error connecting to backend.";
+    }
+
+    saveToStorage();
+    renderMessages();
+}
+
+        async function refreshChatBackend(messages) {
+            const response = await fetch("/api/chat", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ messages: messages })
+            });
+            return await response.json();
+        }
+
+        // Initial Render on page load
+        renderSidebar();
+        renderMessages();
+    </script>
+</body>
+</html>
